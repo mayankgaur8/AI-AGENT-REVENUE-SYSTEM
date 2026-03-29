@@ -1,6 +1,6 @@
 """
 Follow-up Agent
-Schedules and sends follow-up messages at Day 2, Day 5, Day 10.
+Schedules and sends follow-up messages at Day 2 and a faster second touch.
 """
 import logging
 from datetime import datetime, timezone, timedelta
@@ -17,7 +17,9 @@ logger = logging.getLogger(__name__)
 
 FOLLOWUP_SCHEDULE = {
     FollowUpStage.DAY_2: 2,
-    FollowUpStage.DAY_5: 5,
+    # Use the existing DAY_5 enum slot for a Day 4 follow-up to match the
+    # conversion playbook without forcing a schema change.
+    FollowUpStage.DAY_5: 4,
     FollowUpStage.DAY_10: 10,
 }
 

@@ -62,6 +62,26 @@ class PaymentRequest(BaseModel):
     method: Optional[str] = "Stripe/PayPal"
 
 
+class RevenueFlowRequest(BaseModel):
+    title: str
+    description: str
+    budget: Optional[str] = ""
+    budget_min: Optional[float] = 0
+    budget_max: Optional[float] = 0
+    source: Optional[str] = ""
+    tags: Optional[str] = "[]"
+    company: Optional[str] = ""
+    is_remote: Optional[int] = 1
+    score: Optional[int] = 0
+
+
+class PaymentTriggerRequest(BaseModel):
+    lead_id: Optional[int] = None
+    amount: float
+    currency: str = "EUR"
+    method: Optional[str] = "Stripe/PayPal"
+
+
 def _lead_to_prediction_input(lead: Lead) -> dict:
     return {
         "id": lead.id,
@@ -225,6 +245,30 @@ async def generate_payment_message(body: PaymentRequest):
     """Generate a payment collection message for direct clients."""
     agent = RevenueConversionAgent()
     return {"message": agent.generate_payment_message(body.method)}
+
+
+@router.post("/payment/trigger")
+async def trigger_payment(body: PaymentTriggerRequest):
+    """Generate payment message plus a structured payment payload."""
+    agent = RevenueConversionAgent()
+    return {
+        "message": agent.generate_payment_message(body.method),
+        **agent.generate_payment_payload(
+            lead_id=body.lead_id,
+            amount=body.amount,
+            currency=body.currency,
+            method=body.method,
+        ),
+    }
+
+
+@router.post("/revenue-engine/execute")
+async def execute_revenue_engine(body: RevenueFlowRequest):
+    """Run the full lead -> scoring -> smart message execution flow for one lead."""
+    agent = RevenueConversionAgent()
+    lead = body.model_dump()
+    result = await agent.execute_revenue_flow(lead)
+    return result
 
 
 @router.get("/revenue/stats")

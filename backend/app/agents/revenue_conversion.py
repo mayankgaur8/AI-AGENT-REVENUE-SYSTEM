@@ -5,7 +5,9 @@ outreach optimization, high-value filtering, instant replies,
 deal closing, and payment guidance.
 """
 import logging
+from datetime import datetime, timezone
 from typing import Any, Optional
+from urllib.parse import urlencode
 
 import anthropic
 
@@ -58,6 +60,57 @@ class RevenueConversionAgent:
         if budget >= 150:
             return "low"
         return "ignore"
+
+    def analyze_lead(self, lead: dict[str, Any]) -> dict[str, str]:
+        description = (lead.get("description", "") or "").strip()
+        problem = description.split(".")[0].strip() if description else lead.get("title", "") or "general implementation need"
+        urgency = "high" if any(token in description.lower() for token in ("urgent", "asap", "immediately", "quick", "1 week", "2 week")) else "normal"
+        budget_level = self.priority_tier(lead).upper()
+        tech_text = f"{lead.get('title', '')} {description} {lead.get('tags', '')}".lower()
+        if "java" in tech_text and "spring" in tech_text:
+            tech_match = "strong"
+        elif "java" in tech_text or "spring" in tech_text:
+            tech_match = "partial"
+        else:
+            tech_match = "weak"
+
+        complexity = "high" if any(token in tech_text for token in ("microservices", "kafka", "distributed", "architecture")) else "medium"
+        return {
+            "problem": problem,
+            "urgency": urgency,
+            "budget_level": budget_level,
+            "tech_match": tech_match,
+            "complexity": complexity,
+        }
+
+    def score_lead(self, lead: dict[str, Any]) -> dict[str, Any]:
+        analysis = self.analyze_lead(lead)
+        base_score = int(lead.get("score", 0))
+        priority = self.priority_tier(lead).upper()
+
+        if analysis["tech_match"] == "strong":
+            base_score += 10
+        elif analysis["tech_match"] == "partial":
+            base_score += 5
+
+        if analysis["urgency"] == "high":
+            base_score += 5
+        if priority == "GOLD":
+            base_score += 10
+        elif priority == "HIGH":
+            base_score += 6
+        elif priority == "LOW":
+            base_score -= 5
+        elif priority == "IGNORE":
+            base_score -= 20
+
+        score = max(0, min(base_score, 100))
+        return {
+            "score": score,
+            "priority": priority,
+            "should_reject": score < 70,
+            "analysis": analysis,
+        }
 
     def should_focus(self, lead: dict[str, Any]) -> bool:
         return self.priority_tier(lead) in {"medium", "high", "gold"}
@@ -216,3 +269,51 @@ Timeline days: {timeline_days}
             f"To proceed, I can share a simple invoice or payment link ({method_text}).\n\n"
             f"Once confirmed, I'll start immediately."
         )
+
+    def generate_payment_payload(
+        self,
+        *,
+        lead_id: Optional[int],
+        amount: float,
+        currency: str = "EUR",
+        method: Optional[str] = "Stripe/PayPal",
+    ) -> dict[str, Any]:
+        query = urlencode(
+            {
+                "lead_id": lead_id or "",
+                "amount": int(amount),
+                "currency": currency,
+                "method": method or "Stripe/PayPal",
+            }
+        )
+        payment_link = f"{settings.PAYMENT_BASE_URL}?{query}"
+        return {
+            "payment_link": payment_link,
+            "amount": amount,
+            "currency": currency,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    async def execute_revenue_flow(self, lead: dict[str, Any]) -> dict[str, Any]:
+        scoring = self.score_lead(lead)
+        if scoring["should_reject"]:
+            return {
+                "analysis": scoring["analysis"],
+                "scoring": {
+                    "score": scoring["score"],
+                    "priority": scoring["priority"],
+                    "should_reject": True,
+                },
+                "message": None,
+            }
+
+        smart_message = await self.generate_outreach_message(lead)
+        return {
+            "analysis": scoring["analysis"],
+            "scoring": {
+                "score": scoring["score"],
+                "priority": scoring["priority"],
+                "should_reject": False,
+            },
+            "message": smart_message,
+        }

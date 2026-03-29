@@ -25,6 +25,7 @@ from app.agents.conversion_predictor import ConversionPredictorAgent
 from app.agents.outreach import OutreachAgent
 from app.agents.followup import FollowUpAgent
 from app.agents.revenue_tracker import RevenueTrackerAgent
+from app.agents.revenue_conversion import RevenueConversionAgent
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ class OrchestratorAgent:
         self.proposal_gen = ProposalGeneratorAgent()
         self.ab_tester = ABTesterAgent()
         self.predictor = ConversionPredictorAgent()
+        self.revenue_conversion = RevenueConversionAgent()
         self.outreach = OutreachAgent()
         self.followup = FollowUpAgent()
         self.revenue = RevenueTrackerAgent()
@@ -134,7 +136,8 @@ class OrchestratorAgent:
             try:
                 # Conversion prediction — skip auto-reject leads
                 prediction = self.predictor.predict(lead_data)
-                if prediction["should_reject"]:
+                revenue_flow = await self.revenue_conversion.execute_revenue_flow(lead_data)
+                if prediction["should_reject"] or revenue_flow["scoring"]["should_reject"]:
                     rejected_count += 1
                     logger.debug(f"Auto-rejected: '{lead_data.get('title', '')[:50]}' (score too low)")
                     continue
@@ -207,7 +210,7 @@ class OrchestratorAgent:
                     lead.status = LeadStatus.PROPOSAL_SENT
 
                 # Prepare outreach (active variant only)
-                outreach_msg = await self.proposal_gen.generate_outreach_message(lead_data)
+                outreach_msg = revenue_flow["message"] or await self.proposal_gen.generate_outreach_message(lead_data)
                 outreach_log = OutreachLog(
                     lead_id=lead.id,
                     message=outreach_msg,

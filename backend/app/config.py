@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "dev-secret-key"
     ENVIRONMENT: str = "development"
     FRONTEND_URL: str = "http://localhost:3000"
+    PAYMENT_BASE_URL: str = "http://localhost:3000/payments/checkout"
 
     # Email
     SMTP_HOST: str = "smtp.gmail.com"
