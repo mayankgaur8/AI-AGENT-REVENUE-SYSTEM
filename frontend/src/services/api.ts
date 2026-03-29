@@ -1,7 +1,13 @@
 import axios from 'axios'
 
+const configuredBaseUrl = import.meta.env.VITE_API_URL?.trim().replace(/\/$/, '')
+const fallbackBaseUrl =
+  window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+    ? '/api'
+    : 'https://ai-agent-revenue-api-mayank-etcse3d6dbc8cddj.centralindia-01.azurewebsites.net/api'
+
 const api = axios.create({
-  baseURL: '/api',
+  baseURL: configuredBaseUrl || fallbackBaseUrl,
   headers: { 'Content-Type': 'application/json' },
 })
 
