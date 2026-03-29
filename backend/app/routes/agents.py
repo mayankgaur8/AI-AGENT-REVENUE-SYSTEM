@@ -3,14 +3,18 @@ Agent orchestration routes.
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func
 from pydantic import BaseModel
 from typing import Optional
+from datetime import datetime, timezone, timedelta
 
 from app.db import get_db
 from app.agents.orchestrator import OrchestratorAgent
 from app.agents.proposal_generator import ProposalGeneratorAgent
 from app.agents.delivery_assistant import DeliveryAssistantAgent
 from app.agents.followup import FollowUpAgent
+from app.agents.ab_tester import ABTesterAgent
+from app.agents.conversion_predictor import ConversionPredictorAgent
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
@@ -139,3 +143,146 @@ async def get_revenue_stats(db: AsyncSession = Depends(get_db)):
     from app.agents.revenue_tracker import RevenueTrackerAgent
     tracker = RevenueTrackerAgent()
     return await tracker.get_stats(db)
+
+
+@router.get("/metrics/daily")
+async def get_daily_metrics(db: AsyncSession = Depends(get_db)):
+    """
+    Key daily metrics:
+    proposals/day, replies/day, deals/week, revenue/month.
+    """
+    from app.models.proposal import Proposal
+    from app.models.outreach import OutreachLog, OutreachStatus
+    from app.models.lead import Lead, LeadStatus
+    from app.models.revenue import Revenue
+
+    now = datetime.now(timezone.utc)
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start = day_start - timedelta(days=day_start.weekday())
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    # Proposals created today
+    proposals_today = await db.execute(
+        select(func.count()).select_from(Proposal).where(
+            Proposal.created_at >= day_start
+        )
+    )
+
+    # Replies (outreach marked REPLIED) today
+    replies_today = await db.execute(
+        select(func.count()).select_from(OutreachLog).where(
+            OutreachLog.status == OutreachStatus.REPLIED,
+            OutreachLog.created_at >= day_start,
+        )
+    )
+
+    # Deals closed this week
+    deals_week = await db.execute(
+        select(func.count()).select_from(Lead).where(
+            Lead.status == LeadStatus.CLOSED_WON,
+            Lead.updated_at >= week_start,
+        )
+    )
+
+    # Revenue this month
+    revenue_month = await db.execute(
+        select(func.coalesce(func.sum(Revenue.amount), 0)).where(
+            Revenue.created_at >= month_start
+        )
+    )
+
+    # Auto-sent proposals today
+    auto_sent_today = await db.execute(
+        select(func.count()).select_from(Proposal).where(
+            Proposal.auto_sent.is_(True),
+            Proposal.created_at >= day_start,
+        )
+    )
+
+    return {
+        "date": now.date().isoformat(),
+        "proposals_today": proposals_today.scalar_one() or 0,
+        "auto_sent_today": auto_sent_today.scalar_one() or 0,
+        "replies_today": replies_today.scalar_one() or 0,
+        "deals_this_week": deals_week.scalar_one() or 0,
+        "revenue_this_month_eur": float(revenue_month.scalar_one() or 0),
+        "min_20_target_met": (proposals_today.scalar_one() or 0) >= 20,
+    }
+
+
+@router.get("/ab-stats")
+async def get_ab_stats(db: AsyncSession = Depends(get_db)):
+    """
+    A/B variant performance: reply rates, conversion rates, current winner.
+    """
+    tester = ABTesterAgent()
+    return await tester.get_stats(db)
+
+
+@router.get("/predict/{lead_id}")
+async def predict_lead(lead_id: int, db: AsyncSession = Depends(get_db)):
+    """
+    Conversion prediction for a specific lead.
+    Returns reply_probability, deal_probability, should_reject, active signals.
+    """
+    from app.models.lead import Lead
+    result = await db.execute(select(Lead).where(Lead.id == lead_id))
+    lead = result.scalar_one_or_none()
+    if not lead:
+        raise HTTPException(status_code=404, detail=f"Lead {lead_id} not found")
+
+    import json as _json
+    lead_dict = {
+        "id": lead.id,
+        "title": lead.title,
+        "company": lead.company or "",
+        "description": lead.description or "",
+        "budget": lead.budget or "",
+        "budget_min": lead.budget_min or 0,
+        "budget_max": lead.budget_max or 0,
+        "source": lead.source or "",
+        "tags": lead.tags or "[]",
+        "score": lead.score or 0,
+        "is_remote": lead.is_remote or 0,
+    }
+
+    predictor = ConversionPredictorAgent()
+    prediction = predictor.predict(lead_dict)
+    return {"lead_id": lead_id, "title": lead.title, **prediction}
+
+
+@router.post("/optimize")
+async def run_optimization(db: AsyncSession = Depends(get_db)):
+    """
+    Trigger an optimization pass:
+    - Recalculate A/B winner
+    - Return low-reply-rate leads for review
+    - Return recommended active variant going forward
+    """
+    from app.models.outreach import OutreachLog, OutreachStatus
+    from sqlalchemy import text
+
+    tester = ABTesterAgent()
+    ab_stats = await tester.get_stats(db)
+    recommended_variant = tester.select_variant(ab_stats)
+
+    # Leads with pending outreach older than 10 days (candidates to close out)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=10)
+    stale_result = await db.execute(
+        select(func.count()).select_from(OutreachLog).where(
+            OutreachLog.status == OutreachStatus.PENDING,
+            OutreachLog.created_at <= cutoff,
+        )
+    )
+    stale_count = stale_result.scalar_one() or 0
+
+    return {
+        "optimized_at": datetime.now(timezone.utc).isoformat(),
+        "recommended_variant": recommended_variant,
+        "ab_stats": ab_stats,
+        "stale_pending_outreach": stale_count,
+        "action": (
+            f"Switch to variant {recommended_variant} for new proposals. "
+            f"{stale_count} stale outreach messages older than 10 days should be reviewed."
+        ),
+    }

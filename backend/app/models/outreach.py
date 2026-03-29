@@ -26,8 +26,11 @@ class OutreachLog(Base):
     id = Column(Integer, primary_key=True, index=True)
     lead_id = Column(Integer, ForeignKey("leads.id"), nullable=False)
     message = Column(Text, nullable=False)
+    subject = Column(String(300))               # email subject line (if channel=email)
     channel = Column(SAEnum(OutreachChannel), nullable=False)
+    variant = Column(String(2), default="A")    # "A" = technical, "B" = business
     status = Column(SAEnum(OutreachStatus), default=OutreachStatus.PENDING)
+    auto_sent = Column(Integer, default=0)      # 1 if auto-sent (no user click required)
     sent_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     error_message = Column(Text)

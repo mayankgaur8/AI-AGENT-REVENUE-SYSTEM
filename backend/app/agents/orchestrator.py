@@ -1,8 +1,10 @@
 """
 Orchestrator Agent
 Coordinates the full daily pipeline:
-1. Fetch leads → 2. Score → 3. Filter top 20 → 4. Generate proposals
-→ 5. Prepare outreach → 6. Schedule follow-ups → 7. Update revenue stats
+1. Fetch leads → 2. Score → 3. Filter top N → 4. Predict conversion
+→ 5. Generate A/B proposals (auto-send if eligible) → 6. Prepare outreach
+→ 7. Schedule follow-ups → 8. Update revenue stats
+Enforces minimum 20 proposals/day.
 """
 import logging
 import json
@@ -18,6 +20,8 @@ from app.models.outreach import OutreachLog, OutreachChannel, OutreachStatus
 from app.agents.lead_hunter import LeadHunterAgent
 from app.agents.scorer import ScorerAgent
 from app.agents.proposal_generator import ProposalGeneratorAgent
+from app.agents.ab_tester import ABTesterAgent
+from app.agents.conversion_predictor import ConversionPredictorAgent
 from app.agents.outreach import OutreachAgent
 from app.agents.followup import FollowUpAgent
 from app.agents.revenue_tracker import RevenueTrackerAgent
@@ -25,6 +29,7 @@ from app.agents.revenue_tracker import RevenueTrackerAgent
 logger = logging.getLogger(__name__)
 
 TOP_LEADS_LIMIT = 20
+MIN_PROPOSALS_PER_DAY = 20
 
 
 class OrchestratorAgent:
@@ -34,6 +39,8 @@ class OrchestratorAgent:
         self.lead_hunter = LeadHunterAgent()
         self.scorer = ScorerAgent()
         self.proposal_gen = ProposalGeneratorAgent()
+        self.ab_tester = ABTesterAgent()
+        self.predictor = ConversionPredictorAgent()
         self.outreach = OutreachAgent()
         self.followup = FollowUpAgent()
         self.revenue = RevenueTrackerAgent()
@@ -49,7 +56,7 @@ class OrchestratorAgent:
         Returns a detailed run report.
         """
         run_start = datetime.now(timezone.utc)
-        report = {
+        report: dict[str, Any] = {
             "run_at": run_start.isoformat(),
             "steps": {},
             "summary": {},
@@ -88,22 +95,50 @@ class OrchestratorAgent:
             report["errors"].append(f"Score: {e}")
             scored_leads = []
 
-        # ── Step 3: Filter Top Leads ─────────────────────────────────
-        top_leads = scored_leads[:max_leads]
+        # ── Step 3: Filter Top Leads (enforce min 20) ────────────────
+        target = max(max_leads, MIN_PROPOSALS_PER_DAY)
+        top_leads = scored_leads[:target]
         report["steps"]["filter"] = {
             "status": "ok",
             "top_leads": len(top_leads),
+            "target": target,
         }
-        logger.info(f"Step 3 — Top {len(top_leads)} leads selected")
+        logger.info(f"Step 3 — Top {len(top_leads)} leads selected (target ≥ {target})")
 
-        # ── Step 4 & 5: Save leads, Generate Proposals, Prepare Outreach ──
+        # ── Step 4: Load A/B stats for variant selection ─────────────
+        try:
+            ab_stats = await self.ab_tester.get_stats(db)
+            active_variant = self.ab_tester.select_variant(ab_stats)
+            report["steps"]["ab_variant"] = {
+                "status": "ok",
+                "active_variant": active_variant,
+                "winner": ab_stats.get("winner"),
+                "reason": ab_stats.get("reason"),
+            }
+            logger.info(f"Step 4 — A/B active variant: {active_variant} ({ab_stats.get('reason')})")
+        except Exception as e:
+            logger.error(f"Step 4 (A/B) FAILED: {e}")
+            ab_stats = {}
+            active_variant = "A"
+            report["errors"].append(f"AB tester: {e}")
+
+        # ── Step 5 & 6: Save leads, Generate A/B Proposals, Prepare Outreach ──
         proposals_created = 0
+        auto_sent_count = 0
         outreach_prepared = 0
         skipped_duplicates = 0
+        rejected_count = 0
         new_lead_ids = []
 
         for lead_data in top_leads:
             try:
+                # Conversion prediction — skip auto-reject leads
+                prediction = self.predictor.predict(lead_data)
+                if prediction["should_reject"]:
+                    rejected_count += 1
+                    logger.debug(f"Auto-rejected: '{lead_data.get('title', '')[:50]}' (score too low)")
+                    continue
+
                 # Check for duplicate (same URL)
                 url = lead_data.get("url", "")
                 if url:
@@ -132,33 +167,52 @@ class OrchestratorAgent:
                     status=LeadStatus.SCORED,
                 )
                 db.add(lead)
-                await db.flush()  # Get ID without full commit
+                await db.flush()
                 new_lead_ids.append(lead.id)
 
-                # Generate proposal
-                proposal_data = await self.proposal_gen.generate_proposal(lead_data)
-                proposal_text = proposal_data.get("proposal", "")
+                # Generate both A/B variants
+                ab_proposals = await self.proposal_gen.generate_ab_proposals(lead_data)
 
-                proposal = Proposal(
-                    lead_id=lead.id,
-                    proposal_text=proposal_text,
-                    short_pitch=proposal_data.get("short_pitch", ""),
-                    technical_approach=proposal_data.get("technical_approach", ""),
-                    word_count=len(proposal_text.split()),
-                    is_approved=False,
-                    is_sent=False,
-                )
-                db.add(proposal)
+                # Generate cold email
+                cold_email = await self.proposal_gen.generate_cold_email(lead_data)
+
+                # Determine if auto-send eligible
+                is_auto_eligible = self.proposal_gen.is_auto_send_eligible(lead_data)
+
+                for variant_key, proposal_data in ab_proposals.items():
+                    proposal_text = proposal_data.get("proposal", "")
+                    proposal = Proposal(
+                        lead_id=lead.id,
+                        proposal_text=proposal_text,
+                        short_pitch=proposal_data.get("short_pitch", ""),
+                        technical_approach=proposal_data.get("technical_approach", ""),
+                        email_subject=cold_email.get("subject", "") if variant_key == active_variant else "",
+                        email_body=cold_email.get("body", "") if variant_key == active_variant else "",
+                        variant=variant_key,
+                        word_count=len(proposal_text.split()),
+                        reply_probability=prediction["reply_probability"],
+                        deal_probability=prediction["deal_probability"],
+                        auto_sent=is_auto_eligible and variant_key == active_variant,
+                        is_approved=is_auto_eligible and variant_key == active_variant,
+                        is_sent=False,
+                    )
+                    db.add(proposal)
+
                 proposals_created += 1
+                if is_auto_eligible:
+                    auto_sent_count += 1
+                    lead.status = LeadStatus.PROPOSAL_SENT
 
-                # Prepare outreach (PENDING — needs user approval)
+                # Prepare outreach (active variant only)
                 channel = self._determine_channel(lead_data)
                 outreach_msg = await self.proposal_gen.generate_outreach_message(lead_data)
                 outreach_log = OutreachLog(
                     lead_id=lead.id,
                     message=outreach_msg,
                     channel=channel,
+                    variant=active_variant,
                     status=OutreachStatus.PENDING,
+                    auto_sent=1 if is_auto_eligible else 0,
                 )
                 db.add(outreach_log)
                 outreach_prepared += 1
@@ -172,37 +226,44 @@ class OrchestratorAgent:
         report["steps"]["proposals"] = {
             "status": "ok",
             "proposals_created": proposals_created,
+            "auto_sent": auto_sent_count,
             "skipped_duplicates": skipped_duplicates,
+            "auto_rejected": rejected_count,
+            "min_target_met": proposals_created >= MIN_PROPOSALS_PER_DAY,
         }
         report["steps"]["outreach"] = {
             "status": "ok",
             "outreach_prepared": outreach_prepared,
-            "note": "All outreach is PENDING — requires user approval before sending",
+            "auto_sent": auto_sent_count,
+            "note": "Outreach with auto_sent=1 was sent automatically; others require approval",
         }
-        logger.info(f"Step 4 — Created {proposals_created} proposals")
-        logger.info(f"Step 5 — Prepared {outreach_prepared} outreach messages (pending approval)")
+        logger.info(
+            f"Step 5 — {proposals_created} proposals created "
+            f"({auto_sent_count} auto-sent, {rejected_count} rejected)"
+        )
+        logger.info(f"Step 6 — {outreach_prepared} outreach messages prepared")
 
-        # ── Step 6: Schedule Follow-ups for Already-Sent Outreach ────
+        # ── Step 7: Schedule Follow-ups for Already-Sent Outreach ────
         try:
             followup_scheduled = await self._schedule_pending_followups(db)
             report["steps"]["followups"] = {
                 "status": "ok",
                 "followups_scheduled": followup_scheduled,
             }
-            logger.info(f"Step 6 — Scheduled {followup_scheduled} follow-ups")
+            logger.info(f"Step 7 — Scheduled {followup_scheduled} follow-ups")
         except Exception as e:
-            logger.error(f"Step 6 FAILED: {e}")
+            logger.error(f"Step 7 FAILED: {e}")
             report["steps"]["followups"] = {"status": "error", "error": str(e)}
             report["errors"].append(f"Followups: {e}")
 
-        # ── Step 7: Revenue Stats ────────────────────────────────────
+        # ── Step 8: Revenue Stats ────────────────────────────────────
         try:
             stats = await self.revenue.get_stats(db)
             report["steps"]["revenue"] = {"status": "ok"}
             report["revenue_stats"] = stats
-            logger.info(f"Step 7 — Revenue stats: €{stats['revenue']['total_earned_eur']:.0f} earned")
+            logger.info(f"Step 8 — Revenue stats: €{stats['revenue']['total_earned_eur']:.0f} earned")
         except Exception as e:
-            logger.error(f"Step 7 FAILED: {e}")
+            logger.error(f"Step 8 FAILED: {e}")
             report["steps"]["revenue"] = {"status": "error", "error": str(e)}
             report["errors"].append(f"Revenue: {e}")
 
@@ -212,14 +273,21 @@ class OrchestratorAgent:
         report["summary"] = {
             "new_leads_added": len(new_lead_ids),
             "proposals_created": proposals_created,
-            "outreach_pending_approval": outreach_prepared,
+            "proposals_auto_sent": auto_sent_count,
+            "outreach_pending_approval": outreach_prepared - auto_sent_count,
+            "auto_rejected_leads": rejected_count,
+            "active_variant": active_variant,
+            "min_20_target_met": proposals_created >= MIN_PROPOSALS_PER_DAY,
             "duration_seconds": round(duration_sec, 2),
             "errors": len(report["errors"]),
         }
 
         logger.info("=" * 60)
         logger.info(f"OrchestratorAgent: Pipeline complete in {duration_sec:.1f}s")
-        logger.info(f"  New leads: {len(new_lead_ids)}, Proposals: {proposals_created}")
+        logger.info(
+            f"  New leads: {len(new_lead_ids)}, Proposals: {proposals_created} "
+            f"(auto-sent: {auto_sent_count})"
+        )
         logger.info("=" * 60)
 
         await self.lead_hunter.close()
