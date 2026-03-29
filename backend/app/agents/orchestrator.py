@@ -97,7 +97,7 @@ class OrchestratorAgent:
 
         # ── Step 3: Filter Top Leads (enforce min 20) ────────────────
         target = max(max_leads, MIN_PROPOSALS_PER_DAY)
-        top_leads = scored_leads[:target]
+        top_leads = self._select_revenue_first_leads(scored_leads, target)
         report["steps"]["filter"] = {
             "status": "ok",
             "top_leads": len(top_leads),
@@ -170,14 +170,17 @@ class OrchestratorAgent:
                 await db.flush()
                 new_lead_ids.append(lead.id)
 
+                # Determine send policy first so proposal generation can respect the real channel.
+                channel = self._determine_channel(lead_data)
+                send_policy = self.proposal_gen.get_send_policy(lead_data)
+
                 # Generate both A/B variants
                 ab_proposals = await self.proposal_gen.generate_ab_proposals(lead_data)
 
                 # Generate cold email
                 cold_email = await self.proposal_gen.generate_cold_email(lead_data)
 
-                # Determine if auto-send eligible
-                is_auto_eligible = self.proposal_gen.is_auto_send_eligible(lead_data)
+                is_auto_eligible = send_policy["auto_send_eligible"]
 
                 for variant_key, proposal_data in ab_proposals.items():
                     proposal_text = proposal_data.get("proposal", "")
@@ -204,7 +207,6 @@ class OrchestratorAgent:
                     lead.status = LeadStatus.PROPOSAL_SENT
 
                 # Prepare outreach (active variant only)
-                channel = self._determine_channel(lead_data)
                 outreach_msg = await self.proposal_gen.generate_outreach_message(lead_data)
                 outreach_log = OutreachLog(
                     lead_id=lead.id,
@@ -330,3 +332,40 @@ class OrchestratorAgent:
         if source == "linkedin":
             return OutreachChannel.LINKEDIN
         return OutreachChannel.EMAIL
+
+    def _select_revenue_first_leads(self, leads: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+        """
+        Prioritize the queue for revenue speed:
+        budget >= €300, strong Java/Spring fit, delivery <= 2 weeks,
+        high reply probability, high deal probability.
+        """
+        prioritized = sorted(
+            leads,
+            key=self._revenue_priority_score,
+            reverse=True,
+        )
+        return prioritized[:limit]
+
+    def _revenue_priority_score(self, lead: dict[str, Any]) -> float:
+        prediction = self.predictor.predict(lead)
+        budget = max(
+            float(lead.get("budget_min") or 0),
+            float(lead.get("budget_max") or 0),
+        )
+        if budget == 0:
+            budget = self.proposal_gen._parse_budget_string(str(lead.get("budget", "")))
+
+        description = f"{lead.get('title', '')} {lead.get('description', '')}".lower()
+        score = float(lead.get("score", 0))
+        score += min(budget / 40.0, 35.0)
+        score += prediction["reply_probability"] * 40
+        score += prediction["deal_probability"] * 60
+
+        if budget >= 300:
+            score += 18
+        if any(token in description for token in ("java", "spring", "spring boot")):
+            score += 15
+        if any(token in description for token in ("1 week", "2 week", "2 weeks", "14 day", "14 days", "asap")):
+            score += 10
+
+        return round(score, 3)

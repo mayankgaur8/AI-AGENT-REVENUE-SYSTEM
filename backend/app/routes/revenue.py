@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 from app.db import get_db
+from app.agents.outcome_memory import record_outcome_event
 from app.models.revenue import Revenue, DealStatus
 from app.models.lead import Lead
 
@@ -86,6 +87,17 @@ async def create_deal(body: DealCreate, db: AsyncSession = Depends(get_db)):
         status=body.status,
         notes=body.notes or "",
     )
+    lead_result = await db.execute(select(Lead).where(Lead.id == deal.lead_id))
+    lead = lead_result.scalar_one_or_none()
+    if lead:
+        await record_outcome_event(
+            db,
+            lead=lead,
+            revenue=deal,
+            event_type="deal_recorded",
+            deal_status=deal.status.value if hasattr(deal.status, "value") else str(deal.status),
+            deal_value=deal.amount,
+        )
     return {
         "id": deal.id,
         "lead_id": deal.lead_id,
@@ -122,6 +134,19 @@ async def update_deal(
                 lead.status = LeadStatus.CLOSED_WON
     if body.notes is not None:
         deal.notes = body.notes
+
+    lead_result = await db.execute(select(Lead).where(Lead.id == deal.lead_id))
+    lead = lead_result.scalar_one_or_none()
+    if lead:
+        await record_outcome_event(
+            db,
+            lead=lead,
+            revenue=deal,
+            event_type="deal_updated",
+            deal_status=deal.status.value if hasattr(deal.status, "value") else str(deal.status),
+            deal_value=deal.amount,
+            notes=deal.notes,
+        )
 
     await db.commit()
     await db.refresh(deal)

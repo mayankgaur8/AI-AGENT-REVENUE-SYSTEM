@@ -15,6 +15,10 @@ from app.agents.delivery_assistant import DeliveryAssistantAgent
 from app.agents.followup import FollowUpAgent
 from app.agents.ab_tester import ABTesterAgent
 from app.agents.conversion_predictor import ConversionPredictorAgent
+from app.models.lead import Lead, LeadStatus
+from app.models.outreach import OutreachLog, OutreachStatus
+from app.models.proposal import Proposal
+from app.models.outcome_event import OutcomeEvent
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
@@ -38,6 +42,42 @@ class ProposalRequest(BaseModel):
     source: Optional[str] = ""
     lead_type: Optional[str] = "freelance"
     is_remote: Optional[int] = 1
+
+
+def _lead_to_prediction_input(lead: Lead) -> dict:
+    return {
+        "id": lead.id,
+        "title": lead.title,
+        "company": lead.company or "",
+        "description": lead.description or "",
+        "budget": lead.budget or "",
+        "budget_min": lead.budget_min or 0,
+        "budget_max": lead.budget_max or 0,
+        "source": lead.source or "",
+        "tags": lead.tags or "[]",
+        "score": lead.score or 0,
+        "is_remote": lead.is_remote or 0,
+    }
+
+
+def _budget_value(lead: Lead) -> float:
+    budget = max(float(lead.budget_min or 0), float(lead.budget_max or 0))
+    if budget == 0:
+        budget = ProposalGeneratorAgent._parse_budget_string(lead.budget or "")
+    return budget
+
+
+def _queue_priority_score(lead: Lead, reply_probability: float, deal_probability: float) -> float:
+    score = float(lead.score or 0)
+    score += min(_budget_value(lead) / 40.0, 35.0)
+    score += reply_probability * 40
+    score += deal_probability * 60
+    text = f"{lead.title or ''} {lead.description or ''}".lower()
+    if any(token in text for token in ("java", "spring", "spring boot")):
+        score += 15
+    if any(token in text for token in ("1 week", "2 week", "2 weeks", "14 days", "asap")):
+        score += 10
+    return round(score, 3)
 
 
 @router.post("/run-daily")
@@ -285,4 +325,108 @@ async def run_optimization(db: AsyncSession = Depends(get_db)):
             f"Switch to variant {recommended_variant} for new proposals. "
             f"{stale_count} stale outreach messages older than 10 days should be reviewed."
         ),
+    }
+
+
+@router.get("/action-queue")
+async def get_action_queue(db: AsyncSession = Depends(get_db)):
+    """
+    Revenue-first approval queue with send policy, top actions, and persistent-learning context.
+    """
+    tester = ABTesterAgent()
+    predictor = ConversionPredictorAgent()
+    proposal_gen = ProposalGeneratorAgent()
+
+    ab_stats = await tester.get_stats(db)
+    best_variant = ab_stats.get("winner") or tester.select_variant(ab_stats)
+
+    pending_result = await db.execute(
+        select(OutreachLog).where(OutreachLog.status == OutreachStatus.PENDING).order_by(OutreachLog.created_at.desc())
+    )
+    pending_logs = pending_result.scalars().all()
+
+    items = []
+    auto_send_ready = 0
+    manual_review = 0
+
+    for log in pending_logs:
+        lead_result = await db.execute(select(Lead).where(Lead.id == log.lead_id))
+        lead = lead_result.scalar_one_or_none()
+        if not lead:
+            continue
+
+        proposal_result = await db.execute(
+            select(Proposal)
+            .where(Proposal.lead_id == lead.id, Proposal.variant == log.variant)
+            .order_by(Proposal.created_at.desc())
+        )
+        proposal = proposal_result.scalars().first()
+
+        lead_input = _lead_to_prediction_input(lead)
+        prediction = predictor.predict(lead_input)
+        reply_probability = proposal.reply_probability if proposal else prediction["reply_probability"]
+        deal_probability = proposal.deal_probability if proposal else prediction["deal_probability"]
+        send_policy = proposal_gen.get_send_policy(lead_input)
+        priority_score = _queue_priority_score(lead, reply_probability, deal_probability)
+
+        if send_policy["auto_send_eligible"] and not send_policy["manual_review_required"]:
+            auto_send_ready += 1
+        if send_policy["manual_review_required"]:
+            manual_review += 1
+
+        items.append(
+            {
+                "lead_id": lead.id,
+                "title": lead.title,
+                "company": lead.company or "",
+                "platform": log.channel.value,
+                "budget_value": _budget_value(lead),
+                "budget": lead.budget or "",
+                "score": lead.score or 0,
+                "reply_probability": round(reply_probability, 3),
+                "deal_probability": round(deal_probability, 3),
+                "chosen_variant": proposal.variant if proposal else log.variant,
+                "proposal_id": proposal.id if proposal else None,
+                "outreach_id": log.id,
+                "proposal_preview": (proposal.short_pitch or proposal.proposal_text[:180]) if proposal else "",
+                "outreach_preview": log.message[:180],
+                "auto_send_eligible": send_policy["auto_send_eligible"],
+                "manual_review_required": send_policy["manual_review_required"],
+                "policy_label": send_policy["policy_label"],
+                "priority_score": priority_score,
+                "stack": lead.tags or "[]",
+                "status": log.status.value,
+                "reason_to_act": (
+                    "High-value, fast-delivery lead"
+                    if priority_score >= 120
+                    else "Strong reply/deal probability"
+                ),
+            }
+        )
+
+    items.sort(key=lambda item: item["priority_score"], reverse=True)
+
+    rejected_result = await db.execute(
+        select(func.count()).select_from(Lead).where(Lead.status == LeadStatus.REJECTED)
+    )
+    feedback_result = await db.execute(select(func.count()).select_from(OutcomeEvent))
+
+    return {
+        "summary": {
+            "auto_send_ready": auto_send_ready,
+            "needs_manual_approval": manual_review,
+            "rejected_by_predictor": rejected_result.scalar_one() or 0,
+            "best_variant_today": best_variant,
+            "top_action_count": min(len(items), 5),
+            "feedback_events_logged": feedback_result.scalar_one() or 0,
+        },
+        "policy": {
+            "upwork": "Manual review",
+            "linkedin": "Manual review",
+            "freelancer": "Manual review",
+            "email": "Optional auto-send only for trusted templates",
+        },
+        "ab_stats": ab_stats,
+        "items": items,
+        "top_action_leads": items[:5],
     }

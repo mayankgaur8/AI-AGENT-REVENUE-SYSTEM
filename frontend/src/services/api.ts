@@ -52,6 +52,9 @@ export const sendFollowup = (id: number) =>
 export const getAgentRevenueStats = () =>
   api.get('/agents/revenue/stats').then(r => r.data)
 
+export const getActionQueue = () =>
+  api.get('/agents/action-queue').then(r => r.data)
+
 export const generateDelivery = (payload: { task_type: string; request: string; context?: string }) =>
   api.post('/agents/delivery/generate', payload).then(r => r.data)
 
@@ -84,6 +87,9 @@ export const getProposals = (params?: {
 export const approveProposal = (id: number) =>
   api.post(`/proposals/${id}/approve`).then(r => r.data)
 
+export const rejectProposal = (id: number) =>
+  api.post(`/proposals/${id}/reject`).then(r => r.data)
+
 export const updateProposal = (id: number, data: Record<string, unknown>) =>
   api.patch(`/proposals/${id}`, data).then(r => r.data)
 
@@ -97,6 +103,9 @@ export const getOutreach = (params?: {
 
 export const approveOutreach = (id: number) =>
   api.post(`/outreach/${id}/approve`).then(r => r.data)
+
+export const rejectOutreach = (id: number) =>
+  api.post(`/outreach/${id}/reject`).then(r => r.data)
 
 export const markReplied = (id: number) =>
   api.patch(`/outreach/${id}/replied`).then(r => r.data)

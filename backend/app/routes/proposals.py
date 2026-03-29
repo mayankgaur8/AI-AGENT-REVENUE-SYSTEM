@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 from app.db import get_db
+from app.agents.outcome_memory import record_outcome_event
 from app.models.proposal import Proposal
 from app.models.lead import Lead
 
@@ -129,5 +130,40 @@ async def approve_proposal(proposal_id: int, db: AsyncSession = Depends(get_db))
     if not p:
         raise HTTPException(status_code=404, detail="Proposal not found")
     p.is_approved = True
+    lead_result = await db.execute(select(Lead).where(Lead.id == p.lead_id))
+    lead = lead_result.scalar_one_or_none()
+    if lead:
+        await record_outcome_event(
+            db,
+            lead=lead,
+            proposal=p,
+            event_type="proposal_approved",
+            proposal_outcome="approved",
+        )
     await db.commit()
     return {"id": p.id, "is_approved": True, "message": "Proposal approved"}
+
+
+@router.post("/{proposal_id}/reject")
+async def reject_proposal(proposal_id: int, db: AsyncSession = Depends(get_db)):
+    """Reject a proposal and persist that outcome for later optimization."""
+    result = await db.execute(select(Proposal).where(Proposal.id == proposal_id))
+    p = result.scalar_one_or_none()
+    if not p:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+
+    p.is_approved = False
+    p.is_sent = False
+    lead_result = await db.execute(select(Lead).where(Lead.id == p.lead_id))
+    lead = lead_result.scalar_one_or_none()
+    if lead:
+        await record_outcome_event(
+            db,
+            lead=lead,
+            proposal=p,
+            event_type="proposal_rejected",
+            proposal_outcome="rejected",
+        )
+
+    await db.commit()
+    return {"id": p.id, "is_approved": False, "message": "Proposal rejected"}

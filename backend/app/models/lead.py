@@ -41,3 +41,4 @@ class Lead(Base):
     outreach_logs = relationship("OutreachLog", back_populates="lead", cascade="all, delete-orphan")
     followups = relationship("FollowUp", back_populates="lead", cascade="all, delete-orphan")
     revenues = relationship("Revenue", back_populates="lead", cascade="all, delete-orphan")
+    outcome_events = relationship("OutcomeEvent", back_populates="lead", cascade="all, delete-orphan")

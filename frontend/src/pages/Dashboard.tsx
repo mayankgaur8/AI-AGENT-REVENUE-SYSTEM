@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -6,9 +7,9 @@ import {
 } from 'recharts'
 import {
   Play, RefreshCw, Target, FileText, Send, TrendingUp,
-  CheckCircle, AlertCircle, Clock, Zap
+  CheckCircle, AlertCircle, Clock, Zap, ShieldCheck, Sparkles, XCircle
 } from 'lucide-react'
-import { getRevenueStats, runDailyPipeline, API_BASE_URL } from '../services/api'
+import { getRevenueStats, runDailyPipeline, API_BASE_URL, getActionQueue } from '../services/api'
 import clsx from 'clsx'
 
 function StatCard({
@@ -61,11 +62,18 @@ export default function Dashboard() {
     retry: 1,
   })
 
+  const { data: actionQueue } = useQuery({
+    queryKey: ['action-queue'],
+    queryFn: getActionQueue,
+    refetchInterval: 60_000,
+  })
+
   const runMutation = useMutation({
     mutationFn: () => runDailyPipeline(true, 20),
     onSuccess: (data) => {
       setRunLog(JSON.stringify(data.summary, null, 2))
       qc.invalidateQueries({ queryKey: ['revenue-stats'] })
+      qc.invalidateQueries({ queryKey: ['action-queue'] })
       qc.invalidateQueries({ queryKey: ['leads'] })
       qc.invalidateQueries({ queryKey: ['proposals'] })
       qc.invalidateQueries({ queryKey: ['outreach'] })
@@ -100,6 +108,8 @@ export default function Dashboard() {
   const rev = stats?.revenue ?? {}
   const rates = stats?.rates ?? {}
   const health = stats?.health ?? 'needs_leads'
+  const queueSummary = actionQueue?.summary ?? {}
+  const topActionLeads = actionQueue?.top_action_leads ?? []
 
   const barData = [
     { name: 'Leads', value: s.total_leads ?? 0, fill: '#0ea5e9' },
@@ -178,6 +188,50 @@ export default function Dashboard() {
         />
       </div>
 
+      <div className="card">
+        <div className="flex items-center justify-between gap-3 mb-4">
+          <div>
+            <h2 className="text-sm font-semibold text-gray-300">Best Action Workflow</h2>
+            <p className="text-xs text-gray-500 mt-1">
+              What to send next, what must be reviewed, and which variant is winning today.
+            </p>
+          </div>
+          <Link to="/approval-queue" className="btn-secondary text-sm">
+            Open Queue
+          </Link>
+        </div>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <StatCard
+            label="Auto-Send Ready"
+            value={queueSummary.auto_send_ready ?? 0}
+            sub="Trusted email/direct only"
+            icon={Sparkles}
+            color="emerald"
+          />
+          <StatCard
+            label="Needs Manual Approval"
+            value={queueSummary.needs_manual_approval ?? 0}
+            sub="Safeguard for Upwork, LinkedIn, Freelancer"
+            icon={ShieldCheck}
+            color="amber"
+          />
+          <StatCard
+            label="Rejected by Predictor"
+            value={queueSummary.rejected_by_predictor ?? 0}
+            sub="Saved for future analysis"
+            icon={XCircle}
+            color="rose"
+          />
+          <StatCard
+            label="Best Variant Today"
+            value={queueSummary.best_variant_today ?? 'A'}
+            sub="Current recommended proposal style"
+            icon={Zap}
+            color="violet"
+          />
+        </div>
+      </div>
+
       {/* Pipeline chart */}
       <div className="card">
         <h2 className="text-sm font-semibold text-gray-300 mb-4">Pipeline Funnel</h2>
@@ -221,6 +275,48 @@ export default function Dashboard() {
             <p className="text-xs text-gray-500">Lost</p>
           </div>
         </div>
+      </div>
+
+      <div className="card">
+        <div className="flex items-center justify-between gap-3 mb-4">
+          <div>
+            <h2 className="text-sm font-semibold text-gray-300">Top 5 Leads To Act On First</h2>
+            <p className="text-xs text-gray-500 mt-1">
+              Revenue-first queue ranked by budget, stack fit, speed, and predicted conversion.
+            </p>
+          </div>
+          <span className="badge bg-sky-900 text-sky-300">{topActionLeads.length} visible</span>
+        </div>
+        {topActionLeads.length === 0 ? (
+          <p className="text-sm text-gray-500">Run the pipeline to generate reviewable leads.</p>
+        ) : (
+          <div className="space-y-3">
+            {topActionLeads.map((lead: any, index: number) => (
+              <div key={lead.outreach_id} className="rounded-xl border border-gray-800 bg-gray-800/60 px-4 py-3">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap mb-1">
+                      <span className="badge bg-gray-950 text-gray-300">#{index + 1}</span>
+                      <span className="badge bg-violet-900 text-violet-300">Variant {lead.chosen_variant}</span>
+                      <span className="badge bg-amber-900 text-amber-300 capitalize">{lead.platform}</span>
+                    </div>
+                    <p className="font-medium text-white">{lead.title}</p>
+                    <p className="text-sm text-gray-500">{lead.company || 'Independent client'}</p>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <p className="text-sm font-semibold text-white">{Math.round((lead.deal_probability ?? 0) * 100)}% deal</p>
+                    <p className="text-xs text-gray-500">{Math.round((lead.reply_probability ?? 0) * 100)}% reply</p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-3 gap-3 mt-3 text-xs text-gray-400">
+                  <span>Score: <span className="text-gray-200">{lead.score}</span></span>
+                  <span>Budget: <span className="text-gray-200">{lead.budget_value ? `EUR ${Math.round(lead.budget_value)}` : lead.budget || 'Unknown'}</span></span>
+                  <span>Action: <span className="text-sky-300">{lead.policy_label}</span></span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Run log */}

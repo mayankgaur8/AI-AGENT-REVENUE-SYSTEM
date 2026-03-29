@@ -1,7 +1,7 @@
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
 import {
   LayoutDashboard, Target, FileText,
-  Send, TrendingUp, Zap, Cpu
+  Send, TrendingUp, Zap, Cpu, ShieldCheck
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -11,11 +11,13 @@ import ProposalsPage from './pages/ProposalsPage'
 import OutreachPage from './pages/OutreachPage'
 import RevenuePage from './pages/RevenuePage'
 import DeliveryPage from './pages/DeliveryPage'
+import ApprovalQueuePage from './pages/ApprovalQueuePage'
 
 const NAV = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, exact: true },
   { to: '/leads', label: 'Leads', icon: Target },
   { to: '/proposals', label: 'Proposals', icon: FileText },
+  { to: '/approval-queue', label: 'Approval Queue', icon: ShieldCheck },
   { to: '/outreach', label: 'Outreach', icon: Send },
   { to: '/revenue', label: 'Revenue', icon: TrendingUp },
   { to: '/delivery', label: 'AI Delivery', icon: Cpu },
@@ -68,6 +70,7 @@ export default function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/leads" element={<LeadsPage />} />
             <Route path="/proposals" element={<ProposalsPage />} />
+            <Route path="/approval-queue" element={<ApprovalQueuePage />} />
             <Route path="/outreach" element={<OutreachPage />} />
             <Route path="/revenue" element={<RevenuePage />} />
             <Route path="/delivery" element={<DeliveryPage />} />

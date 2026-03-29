@@ -9,6 +9,7 @@ from typing import Optional
 from datetime import datetime
 
 from app.db import get_db
+from app.agents.outcome_memory import record_outcome_event
 from app.models.outreach import OutreachLog, OutreachStatus, OutreachChannel
 from app.models.lead import Lead
 
@@ -101,6 +102,40 @@ async def mark_replied(outreach_id: int, db: AsyncSession = Depends(get_db)):
     lead = lead_result.scalar_one_or_none()
     if lead:
         lead.status = LeadStatus.RESPONDED
+        await record_outcome_event(
+            db,
+            lead=lead,
+            outreach=log,
+            event_type="reply_received",
+            reply_received=True,
+        )
 
     await db.commit()
     return {"id": log.id, "status": "replied", "lead_id": log.lead_id}
+
+
+@router.post("/{outreach_id}/reject")
+async def reject_outreach(outreach_id: int, db: AsyncSession = Depends(get_db)):
+    """Reject a queued outreach item without sending it."""
+    result = await db.execute(select(OutreachLog).where(OutreachLog.id == outreach_id))
+    log = result.scalar_one_or_none()
+    if not log:
+        raise HTTPException(status_code=404, detail="Outreach log not found")
+
+    log.status = OutreachStatus.FAILED
+    log.error_message = "Rejected during approval review"
+
+    lead_result = await db.execute(select(Lead).where(Lead.id == log.lead_id))
+    lead = lead_result.scalar_one_or_none()
+    if lead:
+        await record_outcome_event(
+            db,
+            lead=lead,
+            outreach=log,
+            event_type="outreach_rejected",
+            proposal_outcome="rejected",
+            notes="Rejected before external send",
+        )
+
+    await db.commit()
+    return {"id": log.id, "status": "failed", "message": "Outreach rejected"}

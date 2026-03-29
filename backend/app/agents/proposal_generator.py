@@ -20,6 +20,7 @@ JOB TITLE: {title}
 DESCRIPTION: {description}
 CLIENT BUDGET: {budget}
 PLATFORM: {platform}
+PLATFORM STYLE: {platform_style}
 
 MY PROFILE:
 - 17+ years Java, Spring Boot, Microservices, Kafka, AWS, Azure
@@ -55,6 +56,7 @@ JOB TITLE: {title}
 DESCRIPTION: {description}
 CLIENT BUDGET: {budget}
 PLATFORM: {platform}
+PLATFORM STYLE: {platform_style}
 
 MY PROFILE:
 - 17+ years delivering Java/Spring Boot systems that save time and cut costs
@@ -164,6 +166,7 @@ Return ONLY the message text.""",
 
 AUTO_SEND_SCORE_THRESHOLD = 70
 AUTO_SEND_BUDGET_THRESHOLD = 300.0  # EUR
+TRUSTED_AUTO_SEND_CHANNELS = {"email", "direct"}
 
 
 class ProposalGeneratorAgent:
@@ -258,7 +261,11 @@ class ProposalGeneratorAgent:
         return self._fallback_followup(lead, stage)
 
     def is_auto_send_eligible(self, lead: dict[str, Any]) -> bool:
-        """Return True if lead meets auto-send criteria: score ≥ 70 AND budget ≥ €300."""
+        """Return True only for trusted email/direct channels and strong leads."""
+        channel = self.get_channel_name(lead)
+        if channel not in TRUSTED_AUTO_SEND_CHANNELS:
+            return False
+
         score = int(lead.get("score", 0))
         budget = max(
             float(lead.get("budget_min") or 0),
@@ -268,20 +275,48 @@ class ProposalGeneratorAgent:
             budget = self._parse_budget_string(str(lead.get("budget", "")))
         return score >= AUTO_SEND_SCORE_THRESHOLD and budget >= AUTO_SEND_BUDGET_THRESHOLD
 
+    def get_channel_name(self, lead: dict[str, Any]) -> str:
+        source = (lead.get("source", "") or "").lower()
+        if "upwork" in source:
+            return "upwork"
+        if "freelancer" in source:
+            return "freelancer"
+        if "linkedin" in source:
+            return "linkedin"
+        if "direct" in source:
+            return "direct"
+        return "email"
+
+    def get_send_policy(self, lead: dict[str, Any]) -> dict[str, Any]:
+        channel = self.get_channel_name(lead)
+        auto_send_eligible = self.is_auto_send_eligible(lead)
+        manual_review_required = channel in {"upwork", "freelancer", "linkedin"} or not auto_send_eligible
+        return {
+            "channel": channel,
+            "auto_send_eligible": auto_send_eligible,
+            "manual_review_required": manual_review_required,
+            "policy_label": (
+                "Manual review required"
+                if manual_review_required
+                else "Trusted template auto-send ready"
+            ),
+        }
+
     # ── AI generation ──────────────────────────────────────────────────────────
 
     async def _generate_with_ai(self, lead: dict[str, Any], variant: str) -> dict[str, str]:
         try:
             prompt_template = PROPOSAL_PROMPT_A if variant == "A" else PROPOSAL_PROMPT_B
             budget_str = lead.get("budget") or f"€{lead.get('budget_min', 0)}–€{lead.get('budget_max', 0)}"
-            source = lead.get("source", "").lower()
-            platform = "Upwork" if "upwork" in source else "LinkedIn" if "linkedin" in source else "Email"
+            platform = self._platform_name(lead)
+            platform_style = self._platform_style(platform)
 
             prompt = prompt_template.format(
                 title=lead.get("title", ""),
                 description=(lead.get("description", "") or "")[:1500],
                 budget=budget_str,
                 platform=platform,
+                platform_style=platform_style,
             )
             msg = self.client.messages.create(
                 model="claude-sonnet-4-6",
@@ -304,6 +339,7 @@ class ProposalGeneratorAgent:
     def _fallback_proposal(self, lead: dict[str, Any], variant: str) -> dict[str, str]:
         title = lead.get("title", "your project")
         company = lead.get("company", "your team") or "your team"
+        platform = self._platform_name(lead)
         import json as _json
         tags = _json.loads(lead.get("tags", "[]") or "[]")
         tech = ", ".join(tags[:3]) if tags else "Java/Spring Boot"
@@ -317,7 +353,10 @@ class ProposalGeneratorAgent:
                 f"I can share a relevant architecture diagram. "
                 f"What's your current bottleneck — performance, reliability, or delivery speed?"
             )
-            short_pitch = f"17yr Java/Spring expert. Built similar systems. Can start this week. Worth a chat?"
+            short_pitch = (
+                f"17yr Java/Spring expert. Built similar systems on {platform}. "
+                f"Can start this week. Worth a chat?"
+            )
             approach = (
                 "• API-first design with OpenAPI spec, agreed upfront with stakeholders\n"
                 "• Domain-driven Spring Boot services, async Kafka for decoupling, Postgres for persistence\n"
@@ -331,7 +370,10 @@ class ProposalGeneratorAgent:
                 f"so you're not paying for months of uncertainty. "
                 f"One question: what does success look like for you in the first 30 days?"
             )
-            short_pitch = f"40% faster delivery, near-zero downtime — proven results for {company}. 15-min call?"
+            short_pitch = (
+                f"40% faster delivery, near-zero downtime — proven results for {company} via {platform}. "
+                f"15-min call?"
+            )
             approach = (
                 "• Week 1: Discovery + working prototype you can see and test\n"
                 "• Week 2–3: Full delivery with documentation and handover\n"
@@ -388,3 +430,24 @@ class ProposalGeneratorAgent:
         import re
         numbers = re.findall(r"[\d]+", budget_str.replace(",", ""))
         return max((float(n) for n in numbers), default=0.0)
+
+    @staticmethod
+    def _platform_name(lead: dict[str, Any]) -> str:
+        source = (lead.get("source", "") or "").lower()
+        if "upwork" in source:
+            return "Upwork"
+        if "freelancer" in source:
+            return "Freelancer"
+        if "linkedin" in source:
+            return "LinkedIn DM"
+        return "Email"
+
+    @staticmethod
+    def _platform_style(platform: str) -> str:
+        styles = {
+            "Upwork": "Execution-focused. Be concise, specific, and immediately credible. Emphasize shipping fast.",
+            "Freelancer": "Competitive and delivery-focused. Highlight scope control, milestones, and reliability.",
+            "LinkedIn DM": "Conversational and human. Sound like a peer, not a cold template.",
+            "Email": "Business-focused. Lead with ROI, clarity, and a simple CTA.",
+        }
+        return styles.get(platform, "Professional, direct, and specific.")
