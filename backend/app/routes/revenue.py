@@ -11,7 +11,7 @@ from app.db import get_db
 from app.models.revenue import Revenue, DealStatus
 from app.models.lead import Lead
 
-router = APIRouter(prefix="/api/revenue", tags=["revenue"])
+router = APIRouter(prefix="/revenue", tags=["revenue"])
 
 
 class DealCreate(BaseModel):

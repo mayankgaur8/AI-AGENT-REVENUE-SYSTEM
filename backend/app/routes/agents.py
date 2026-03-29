@@ -12,7 +12,7 @@ from app.agents.proposal_generator import ProposalGeneratorAgent
 from app.agents.delivery_assistant import DeliveryAssistantAgent
 from app.agents.followup import FollowUpAgent
 
-router = APIRouter(prefix="/api/agents", tags=["agents"])
+router = APIRouter(prefix="/agents", tags=["agents"])
 
 
 class RunDailyRequest(BaseModel):

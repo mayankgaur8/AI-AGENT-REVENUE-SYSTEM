@@ -10,7 +10,7 @@ from typing import Optional
 from app.db import get_db
 from app.models.lead import Lead, LeadStatus
 
-router = APIRouter(prefix="/api/leads", tags=["leads"])
+router = APIRouter(prefix="/leads", tags=["leads"])
 
 
 class LeadUpdate(BaseModel):

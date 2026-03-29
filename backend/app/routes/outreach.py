@@ -12,7 +12,7 @@ from app.db import get_db
 from app.models.outreach import OutreachLog, OutreachStatus, OutreachChannel
 from app.models.lead import Lead
 
-router = APIRouter(prefix="/api/outreach", tags=["outreach"])
+router = APIRouter(prefix="/outreach", tags=["outreach"])
 
 
 @router.get("")

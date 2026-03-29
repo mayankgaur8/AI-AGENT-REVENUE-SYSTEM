@@ -3,10 +3,11 @@
 import axios from 'axios'
 
 const configuredBaseUrl = import.meta.env.VITE_API_URL?.trim().replace(/\/$/, '')
+// Fallback: direct to localhost in dev, direct to Azure host in prod (no /api prefix)
 const fallbackBaseUrl =
   window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-    ? '/api'
-    : 'https://ai-agent-revenue-api-mayank-etcse3d6dbc8cddj.centralindia-01.azurewebsites.net/api'
+    ? 'http://localhost:8000'
+    : 'https://ai-agent-revenue-api-mayank-etcse3d6dbc8cddj.centralindia-01.azurewebsites.net'
 
 export const API_BASE_URL = configuredBaseUrl || fallbackBaseUrl
 

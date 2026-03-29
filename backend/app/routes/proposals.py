@@ -11,7 +11,7 @@ from app.db import get_db
 from app.models.proposal import Proposal
 from app.models.lead import Lead
 
-router = APIRouter(prefix="/api/proposals", tags=["proposals"])
+router = APIRouter(prefix="/proposals", tags=["proposals"])
 
 
 class ProposalUpdate(BaseModel):
