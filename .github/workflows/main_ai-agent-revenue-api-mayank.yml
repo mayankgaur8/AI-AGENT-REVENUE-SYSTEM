@@ -76,3 +76,4 @@ jobs:
           app-name: ai-agent-revenue-api-mayank
           slot-name: Production
           package: release
+          startup-command: gunicorn --bind=0.0.0.0 --timeout 600 --worker-class uvicorn.workers.UvicornWorker app.main:app
