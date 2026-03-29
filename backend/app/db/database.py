@@ -5,13 +5,20 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-engine = create_async_engine(
-    settings.DATABASE_URL,
-    echo=settings.ENVIRONMENT == "development",
-    pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
-)
+database_url = settings.DATABASE_URL
+engine_kwargs = {
+    "echo": settings.ENVIRONMENT == "development",
+}
+
+if database_url.startswith("sqlite+aiosqlite"):
+    # SQLite does not support the same pooling arguments as Postgres drivers.
+    engine_kwargs["connect_args"] = {"timeout": 30}
+else:
+    engine_kwargs["pool_pre_ping"] = True
+    engine_kwargs["pool_size"] = 10
+    engine_kwargs["max_overflow"] = 20
+
+engine = create_async_engine(database_url, **engine_kwargs)
 
 AsyncSessionLocal = async_sessionmaker(
     engine,

@@ -3,7 +3,7 @@ from typing import Optional
 
 
 class Settings(BaseSettings):
-    DATABASE_URL: str = "postgresql+asyncpg://postgres:password@localhost:5432/revenue_agent"
+    DATABASE_URL: str = "sqlite+aiosqlite:///./revenue_agent.db"
     ANTHROPIC_API_KEY: str = ""
     SECRET_KEY: str = "dev-secret-key"
     ENVIRONMENT: str = "development"
