@@ -9,6 +9,7 @@ from typing import Any
 
 import anthropic
 from app.config import settings
+from app.agents.revenue_conversion import RevenueConversionAgent
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +180,7 @@ class ProposalGeneratorAgent:
     """
 
     def __init__(self):
+        self.conversion_agent = RevenueConversionAgent()
         if settings.ANTHROPIC_API_KEY:
             self.client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
             self.ai_enabled = True
@@ -224,23 +226,8 @@ class ProposalGeneratorAgent:
         return self._fallback_cold_email(lead)
 
     async def generate_outreach_message(self, lead: dict[str, Any]) -> str:
-        """Generate LinkedIn DM Day 0 message."""
-        if self.ai_enabled:
-            try:
-                prompt = LINKEDIN_DM_PROMPT.format(
-                    title=lead.get("title", ""),
-                    company=lead.get("company", "") or "your company",
-                    description_snippet=(lead.get("description", "") or "")[:300],
-                )
-                msg = self.client.messages.create(
-                    model="claude-haiku-4-5-20251001",
-                    max_tokens=200,
-                    messages=[{"role": "user", "content": prompt}],
-                )
-                return msg.content[0].text.strip()
-            except Exception as e:
-                logger.error(f"LinkedIn DM generation failed: {e}")
-        return self._fallback_linkedin_dm(lead)
+        """Generate conversion-focused outreach message using the revenue engine."""
+        return await self.conversion_agent.generate_outreach_message(lead)
 
     async def generate_followup_message(self, lead: dict[str, Any], stage: str) -> str:
         """Generate follow-up message for Day 2 / Day 5 / Day 10."""

@@ -15,6 +15,7 @@ from app.agents.delivery_assistant import DeliveryAssistantAgent
 from app.agents.followup import FollowUpAgent
 from app.agents.ab_tester import ABTesterAgent
 from app.agents.conversion_predictor import ConversionPredictorAgent
+from app.agents.revenue_conversion import RevenueConversionAgent
 from app.models.lead import Lead, LeadStatus
 from app.models.outreach import OutreachLog, OutreachStatus
 from app.models.proposal import Proposal
@@ -42,6 +43,23 @@ class ProposalRequest(BaseModel):
     source: Optional[str] = ""
     lead_type: Optional[str] = "freelance"
     is_remote: Optional[int] = 1
+
+
+class InstantReplyRequest(BaseModel):
+    name: str = "there"
+    context: str
+    quick_win: Optional[str] = ""
+
+
+class PricingRequest(BaseModel):
+    requirement: str
+    solution: str
+    price_eur: float
+    timeline_days: int
+
+
+class PaymentRequest(BaseModel):
+    method: Optional[str] = "Stripe/PayPal"
 
 
 def _lead_to_prediction_input(lead: Lead) -> dict:
@@ -175,6 +193,38 @@ async def generate_delivery(body: DeliveryRequest):
         context=body.context or "",
     )
     return result
+
+
+@router.post("/reply/generate")
+async def generate_instant_reply(body: InstantReplyRequest):
+    """Generate a conversion-focused reply within the instant reply workflow."""
+    agent = RevenueConversionAgent()
+    message = await agent.generate_instant_reply(
+        name=body.name,
+        context=body.context,
+        quick_win=body.quick_win or "",
+    )
+    return {"message": message}
+
+
+@router.post("/deal-close/generate")
+async def generate_pricing_message(body: PricingRequest):
+    """Generate a confident price-and-close message for an active conversation."""
+    agent = RevenueConversionAgent()
+    message = await agent.generate_pricing_response(
+        requirement=body.requirement,
+        solution=body.solution,
+        price_eur=body.price_eur,
+        timeline_days=body.timeline_days,
+    )
+    return {"message": message}
+
+
+@router.post("/payment/generate")
+async def generate_payment_message(body: PaymentRequest):
+    """Generate a payment collection message for direct clients."""
+    agent = RevenueConversionAgent()
+    return {"message": agent.generate_payment_message(body.method)}
 
 
 @router.get("/revenue/stats")
