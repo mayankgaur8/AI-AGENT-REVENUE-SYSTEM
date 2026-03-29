@@ -8,7 +8,7 @@ import {
   Play, RefreshCw, Target, FileText, Send, TrendingUp,
   CheckCircle, AlertCircle, Clock, Zap
 } from 'lucide-react'
-import { getRevenueStats, runDailyPipeline } from '../services/api'
+import { getRevenueStats, runDailyPipeline, API_BASE_URL } from '../services/api'
 import clsx from 'clsx'
 
 function StatCard({
@@ -54,10 +54,11 @@ export default function Dashboard() {
   const qc = useQueryClient()
   const [runLog, setRunLog] = useState<string | null>(null)
 
-  const { data: stats, isLoading } = useQuery({
+  const { data: stats, isLoading, isError: statsError } = useQuery({
     queryKey: ['revenue-stats'],
     queryFn: getRevenueStats,
     refetchInterval: 60_000,
+    retry: 1,
   })
 
   const runMutation = useMutation({
@@ -75,6 +76,22 @@ export default function Dashboard() {
     return (
       <div className="flex items-center justify-center h-64 text-gray-500">
         <RefreshCw className="animate-spin mr-2" size={16} /> Loading...
+      </div>
+    )
+  }
+
+  if (statsError) {
+    return (
+      <div className="card border-rose-800 text-rose-300 text-sm space-y-2">
+        <div className="flex items-center gap-2 font-semibold">
+          <AlertCircle size={16} /> Backend unreachable
+        </div>
+        <p className="text-rose-400 text-xs">
+          Failed to load stats from: <code className="bg-gray-800 px-1 rounded">{API_BASE_URL}/revenue/stats</code>
+        </p>
+        <p className="text-gray-500 text-xs">
+          Check browser console for the exact error. Verify Azure is running and CORS allows this origin.
+        </p>
       </div>
     )
   }
@@ -217,8 +234,12 @@ export default function Dashboard() {
         </div>
       )}
       {runMutation.isError && (
-        <div className="card border-rose-800 text-rose-300 text-sm">
-          Pipeline failed: {(runMutation.error as Error)?.message}
+        <div className="card border-rose-800 text-rose-300 text-sm space-y-1">
+          <div className="font-semibold">Pipeline failed: {(runMutation.error as Error)?.message}</div>
+          <div className="text-rose-400 text-xs">
+            Endpoint: <code className="bg-gray-800 px-1 rounded">{API_BASE_URL}/agents/run-daily</code>
+          </div>
+          <div className="text-gray-500 text-xs">Check browser console (F12 → Network) for the full error.</div>
         </div>
       )}
     </div>

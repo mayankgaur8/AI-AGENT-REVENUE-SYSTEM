@@ -1,3 +1,5 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore – axios is resolved at build time via node_modules
 import axios from 'axios'
 
 const configuredBaseUrl = import.meta.env.VITE_API_URL?.trim().replace(/\/$/, '')
@@ -6,10 +8,29 @@ const fallbackBaseUrl =
     ? '/api'
     : 'https://ai-agent-revenue-api-mayank-etcse3d6dbc8cddj.centralindia-01.azurewebsites.net/api'
 
+export const API_BASE_URL = configuredBaseUrl || fallbackBaseUrl
+
 const api = axios.create({
-  baseURL: configuredBaseUrl || fallbackBaseUrl,
+  baseURL: API_BASE_URL,
   headers: { 'Content-Type': 'application/json' },
 })
+
+// ── Debug interceptors ────────────────────────────────────────────────────────
+api.interceptors.request.use((config: any) => {
+  const fullUrl = (config.baseURL ?? '') + (config.url ?? '')
+  console.debug(`[API] → ${config.method?.toUpperCase()} ${fullUrl}`, config.params ?? '')
+  return config
+})
+
+api.interceptors.response.use(
+  (response: any) => response,
+  (error: any) => {
+    const url = (error.config?.baseURL ?? '') + (error.config?.url ?? '')
+    const status = error.response?.status ?? 'network error'
+    console.error(`[API] ✗ ${error.config?.method?.toUpperCase()} ${url} → ${status}`, error.response?.data ?? '')
+    return Promise.reject(error)
+  },
+)
 
 // ── Agents ──────────────────────────────────────────────────────────
 export const runDailyPipeline = (useMock = true, maxLeads = 20) =>

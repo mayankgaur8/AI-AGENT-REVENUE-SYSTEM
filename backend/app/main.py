@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 
 from app.config import settings
 from app.db import init_db
@@ -103,9 +104,21 @@ app.include_router(outreach_router)
 app.include_router(revenue_router)
 
 
+@app.get("/", include_in_schema=False)
+async def root():
+    """Redirect root to API docs."""
+    return RedirectResponse(url="/docs")
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "Revenue AI Agent System"}
+
+
+@app.get("/api/health")
+async def api_health():
+    """Health check reachable via the /api prefix (same path as frontend baseURL)."""
+    return {"status": "ok", "service": "Revenue AI Agent System", "api_prefix": True}
 
 
 @app.get("/api/config")
@@ -117,3 +130,17 @@ async def get_config():
         "ai_enabled": bool(settings.ANTHROPIC_API_KEY),
         "environment": settings.ENVIRONMENT,
     }
+
+
+@app.get("/debug/routes", include_in_schema=False)
+async def debug_routes():
+    """List all registered routes — useful for verifying deployment."""
+    routes = []
+    for route in app.routes:
+        if hasattr(route, "methods") and hasattr(route, "path"):
+            routes.append({
+                "path": route.path,
+                "methods": sorted(route.methods) if route.methods else [],
+                "name": getattr(route, "name", ""),
+            })
+    return {"routes": sorted(routes, key=lambda r: r["path"]), "total": len(routes)}

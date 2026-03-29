@@ -62,6 +62,16 @@ async def list_outreach(
     }
 
 
+# IMPORTANT: /stats must be registered BEFORE /{outreach_id}/... routes so
+# FastAPI matches the literal path "stats" before the wildcard parameter.
+@router.get("/stats")
+async def outreach_stats(db: AsyncSession = Depends(get_db)):
+    """Get outreach channel and status statistics."""
+    from app.agents.outreach import OutreachAgent
+    agent = OutreachAgent()
+    return await agent.get_stats(db)
+
+
 @router.post("/{outreach_id}/approve")
 async def approve_and_send(outreach_id: int, db: AsyncSession = Depends(get_db)):
     """User approves and sends a pending outreach message."""
@@ -94,11 +104,3 @@ async def mark_replied(outreach_id: int, db: AsyncSession = Depends(get_db)):
 
     await db.commit()
     return {"id": log.id, "status": "replied", "lead_id": log.lead_id}
-
-
-@router.get("/stats")
-async def outreach_stats(db: AsyncSession = Depends(get_db)):
-    """Get outreach channel and status statistics."""
-    from app.agents.outreach import OutreachAgent
-    agent = OutreachAgent()
-    return await agent.get_stats(db)
