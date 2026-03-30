@@ -5,8 +5,7 @@ Helps execute gigs faster: code snippets, bug fixes, API designs, documentation.
 import logging
 from typing import Any
 
-import anthropic
-from app.config import settings
+from app.services.ai_client import SharedAIClient, SharedAIError
 
 logger = logging.getLogger(__name__)
 
@@ -87,12 +86,8 @@ class DeliveryAssistantAgent:
     """Helps deliver freelance gigs faster using AI assistance."""
 
     def __init__(self):
-        if settings.ANTHROPIC_API_KEY:
-            self.client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
-            self.ai_enabled = True
-        else:
-            self.client = None
-            self.ai_enabled = False
+        self.ai_client = SharedAIClient()
+        self.ai_enabled = self.ai_client.enabled
 
     async def generate(
         self,
@@ -112,7 +107,7 @@ class DeliveryAssistantAgent:
             return {
                 "task_type": task_type,
                 "request": request,
-                "result": "AI not available. Set ANTHROPIC_API_KEY in .env to enable.",
+                "result": "AI not available. Configure AI_PLATFORM_URL and AI_PLATFORM_API_KEY in .env to enable.",
                 "tokens_used": 0,
             }
 
@@ -122,14 +117,16 @@ class DeliveryAssistantAgent:
                 context=context[:2000] if context else "Not provided",
             )
 
-            message = self.client.messages.create(
-                model="claude-sonnet-4-6",
+            response = await self.ai_client.call_ai(
+                prompt=prompt,
+                prompt_type=f"delivery_{task_type}",
                 max_tokens=2048,
-                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
             )
 
-            result_text = message.content[0].text.strip()
-            tokens = message.usage.input_tokens + message.usage.output_tokens
+            result_text = response["reply"]
+            usage = response.get("usage") or {}
+            tokens = int(usage.get("total_tokens") or 0)
 
             logger.info(
                 f"DeliveryAssistantAgent: Generated {task_type} response "
@@ -143,7 +140,7 @@ class DeliveryAssistantAgent:
                 "tokens_used": tokens,
             }
 
-        except Exception as e:
+        except SharedAIError as e:
             logger.error(f"DeliveryAssistantAgent: Generation failed: {e}")
             return {
                 "task_type": task_type,

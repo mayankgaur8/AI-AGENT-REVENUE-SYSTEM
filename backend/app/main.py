@@ -127,7 +127,7 @@ async def get_config():
         "candidate_name": settings.CANDIDATE_NAME,
         "candidate_skills": settings.CANDIDATE_SKILLS,
         "candidate_years": settings.CANDIDATE_YEARS,
-        "ai_enabled": bool(settings.ANTHROPIC_API_KEY),
+        "ai_enabled": bool(settings.AI_PLATFORM_URL),
         "environment": settings.ENVIRONMENT,
     }
 

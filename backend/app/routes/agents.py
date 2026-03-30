@@ -16,6 +16,7 @@ from app.agents.followup import FollowUpAgent
 from app.agents.ab_tester import ABTesterAgent
 from app.agents.conversion_predictor import ConversionPredictorAgent
 from app.agents.revenue_conversion import RevenueConversionAgent
+from app.services.ai_client import SharedAIClient, SharedAIError
 from app.models.lead import Lead, LeadStatus
 from app.models.outreach import OutreachLog, OutreachStatus
 from app.models.proposal import Proposal
@@ -382,7 +383,23 @@ async def predict_lead(lead_id: int, db: AsyncSession = Depends(get_db)):
 
     predictor = ConversionPredictorAgent()
     prediction = predictor.predict(lead_dict)
-    return {"lead_id": lead_id, "title": lead.title, **prediction}
+    insight = None
+    ai_client = SharedAIClient()
+    if ai_client.enabled:
+        try:
+            response = await ai_client.call_ai(
+                prompt=(
+                    "Summarize whether this lead is worth pursuing in 1 sentence.\n"
+                    f"Lead: {lead_dict}\nPrediction: {prediction}"
+                ),
+                prompt_type="lead_prediction_summary",
+                max_tokens=120,
+                temperature=0.2,
+            )
+            insight = response["reply"]
+        except SharedAIError:
+            insight = None
+    return {"lead_id": lead_id, "title": lead.title, **prediction, "insight": insight}
 
 
 @router.post("/optimize")
@@ -410,15 +427,35 @@ async def run_optimization(db: AsyncSession = Depends(get_db)):
     )
     stale_count = stale_result.scalar_one() or 0
 
+    recommendation = (
+        f"Switch to variant {recommended_variant} for new proposals. "
+        f"{stale_count} stale outreach messages older than 10 days should be reviewed."
+    )
+
+    ai_recommendation = None
+    ai_client = SharedAIClient()
+    if ai_client.enabled:
+        try:
+            response = await ai_client.call_ai(
+                prompt=(
+                    "Give one short optimization recommendation for a revenue outreach engine.\n"
+                    f"A/B stats: {ab_stats}\nStale pending outreach: {stale_count}"
+                ),
+                prompt_type="optimization_recommendation",
+                max_tokens=140,
+                temperature=0.3,
+            )
+            ai_recommendation = response["reply"]
+        except SharedAIError:
+            ai_recommendation = None
+
     return {
         "optimized_at": datetime.now(timezone.utc).isoformat(),
         "recommended_variant": recommended_variant,
         "ab_stats": ab_stats,
         "stale_pending_outreach": stale_count,
-        "action": (
-            f"Switch to variant {recommended_variant} for new proposals. "
-            f"{stale_count} stale outreach messages older than 10 days should be reviewed."
-        ),
+        "action": recommendation,
+        "ai_recommendation": ai_recommendation,
     }
 
 

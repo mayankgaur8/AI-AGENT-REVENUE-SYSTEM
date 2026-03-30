@@ -9,6 +9,10 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
     FRONTEND_URL: str = "http://localhost:3000"
     PAYMENT_BASE_URL: str = "http://localhost:3000/payments/checkout"
+    AI_PLATFORM_URL: str = ""
+    AI_PLATFORM_API_KEY: str = ""
+    AI_REQUIRE_APP_KEY: bool = True
+    AI_TIMEOUT_MS: int = 60000
 
     # Email
     SMTP_HOST: str = "smtp.gmail.com"

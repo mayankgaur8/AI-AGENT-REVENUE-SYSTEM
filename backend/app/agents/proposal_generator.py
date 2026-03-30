@@ -7,9 +7,9 @@ import logging
 import json
 from typing import Any
 
-import anthropic
 from app.config import settings
 from app.agents.revenue_conversion import RevenueConversionAgent
+from app.services.ai_client import SharedAIClient, SharedAIError
 
 logger = logging.getLogger(__name__)
 
@@ -181,13 +181,10 @@ class ProposalGeneratorAgent:
 
     def __init__(self):
         self.conversion_agent = RevenueConversionAgent()
-        if settings.ANTHROPIC_API_KEY:
-            self.client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
-            self.ai_enabled = True
-        else:
-            self.client = None
-            self.ai_enabled = False
-            logger.warning("ProposalGeneratorAgent: No ANTHROPIC_API_KEY — using fallback templates")
+        self.ai_client = SharedAIClient()
+        self.ai_enabled = self.ai_client.enabled
+        if not self.ai_enabled:
+            logger.warning("ProposalGeneratorAgent: Shared AI platform not configured — using fallback templates")
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -212,16 +209,17 @@ class ProposalGeneratorAgent:
                     company=lead.get("company", "") or "your company",
                     description_snippet=(lead.get("description", "") or "")[:400],
                 )
-                msg = self.client.messages.create(
-                    model="claude-haiku-4-5-20251001",
+                response = await self.ai_client.call_ai(
+                    prompt=prompt,
+                    prompt_type="outreach_message",
                     max_tokens=400,
-                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.6,
                 )
-                content = self._extract_json(msg.content[0].text)
+                content = self._extract_json(response["reply"])
                 result = json.loads(content)
                 logger.info(f"ProposalGeneratorAgent: Generated cold email for '{lead.get('title', '')[:50]}'")
                 return result
-            except Exception as e:
+            except (SharedAIError, json.JSONDecodeError) as e:
                 logger.error(f"Cold email generation failed: {e}")
         return self._fallback_cold_email(lead)
 
@@ -237,13 +235,14 @@ class ProposalGeneratorAgent:
                     title=lead.get("title", ""),
                     company=lead.get("company", "") or "your company",
                 )
-                msg = self.client.messages.create(
-                    model="claude-haiku-4-5-20251001",
+                response = await self.ai_client.call_ai(
+                    prompt=prompt,
+                    prompt_type="reply_generator",
                     max_tokens=200,
-                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.5,
                 )
-                return msg.content[0].text.strip()
-            except Exception as e:
+                return response["reply"]
+            except SharedAIError as e:
                 logger.error(f"Follow-up generation failed (stage={stage}): {e}")
         return self._fallback_followup(lead, stage)
 
@@ -305,19 +304,20 @@ class ProposalGeneratorAgent:
                 platform=platform,
                 platform_style=platform_style,
             )
-            msg = self.client.messages.create(
-                model="claude-sonnet-4-6",
+            response = await self.ai_client.call_ai(
+                prompt=prompt,
+                prompt_type="proposal_variant",
                 max_tokens=800,
-                messages=[{"role": "user", "content": prompt}],
+                temperature=0.6,
             )
-            content = self._extract_json(msg.content[0].text)
+            content = self._extract_json(response["reply"])
             result = json.loads(content)
             logger.info(
                 f"ProposalGeneratorAgent: Generated variant {variant} proposal "
                 f"for '{lead.get('title', '')[:50]}'"
             )
             return result
-        except Exception as e:
+        except (SharedAIError, json.JSONDecodeError) as e:
             logger.error(f"AI proposal generation failed (variant={variant}): {e}")
             return self._fallback_proposal(lead, variant)
 

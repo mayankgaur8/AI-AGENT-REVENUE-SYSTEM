@@ -9,9 +9,8 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from urllib.parse import urlencode
 
-import anthropic
-
 from app.config import settings
+from app.services.ai_client import SharedAIClient, SharedAIError
 
 logger = logging.getLogger(__name__)
 
@@ -37,12 +36,8 @@ Human interaction is required to close deals.
 
 class RevenueConversionAgent:
     def __init__(self):
-        if settings.ANTHROPIC_API_KEY:
-            self.client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
-            self.ai_enabled = True
-        else:
-            self.client = None
-            self.ai_enabled = False
+        self.ai_client = SharedAIClient()
+        self.ai_enabled = self.ai_client.enabled
 
     def priority_tier(self, lead: dict[str, Any]) -> str:
         budget = max(float(lead.get("budget_min") or 0), float(lead.get("budget_max") or 0))
@@ -150,14 +145,14 @@ Company: {lead.get("company", "")}
 Description: {(lead.get("description", "") or "")[:1200]}
 Platform: {lead.get("source", "")}
 """
-                msg = self.client.messages.create(
-                    model="claude-haiku-4-5-20251001",
+                response = await self.ai_client.call_ai(
+                    prompt=prompt,
+                    prompt_type="outreach_message",
                     max_tokens=250,
-                    system=MASTER_CONVERSION_SYSTEM_PROMPT,
-                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.6,
                 )
-                return msg.content[0].text.strip()
-            except Exception as exc:
+                return response["reply"]
+            except SharedAIError as exc:
                 logger.error("RevenueConversionAgent outreach generation failed: %s", exc)
 
         title = lead.get("title", "project")
@@ -199,14 +194,14 @@ Name: {name}
 Context: {context}
 Quick win: {quick_win}
 """
-                msg = self.client.messages.create(
-                    model="claude-haiku-4-5-20251001",
+                response = await self.ai_client.call_ai(
+                    prompt=prompt,
+                    prompt_type="reply_generator",
                     max_tokens=300,
-                    system=MASTER_CONVERSION_SYSTEM_PROMPT,
-                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.5,
                 )
-                return msg.content[0].text.strip()
-            except Exception as exc:
+                return response["reply"]
+            except SharedAIError as exc:
                 logger.error("RevenueConversionAgent instant reply failed: %s", exc)
 
         first_step = quick_win or "a quick architecture and scope outline"
@@ -245,14 +240,14 @@ Solution: {solution}
 Price: {price_eur}
 Timeline days: {timeline_days}
 """
-                msg = self.client.messages.create(
-                    model="claude-haiku-4-5-20251001",
+                response = await self.ai_client.call_ai(
+                    prompt=prompt,
+                    prompt_type="deal_closer",
                     max_tokens=250,
-                    system=MASTER_CONVERSION_SYSTEM_PROMPT,
-                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.4,
                 )
-                return msg.content[0].text.strip()
-            except Exception as exc:
+                return response["reply"]
+            except SharedAIError as exc:
                 logger.error("RevenueConversionAgent pricing response failed: %s", exc)
 
         return (
